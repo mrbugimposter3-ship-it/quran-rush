@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#06281d">
 <title>Quran Rush – Fast-Paced Quran Memorization</title>
-<meta name="description" content="A fast, tap-heavy arcade game for memorizing Al-Fatiha and Juz ʿAmma.">
+<meta name="description" content="A fast, tap-heavy arcade game for memorizing the whole Quran: all 114 surahs, by surah, Juz or your daily wird.">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -58,10 +58,31 @@
     </div>
 
     <div class="step">
-      <h2><span class="num">3</span> Pick a surah</h2>
-      <div class="grid" id="surahGrid"></div>
+      <h2><span class="num">3</span> What to practise</h2>
+      <div class="tabs" id="tabs">
+        <button data-tab="surah" class="sel">📖 Surahs</button>
+        <button data-tab="juz">🧭 Juz</button>
+        <button data-tab="jc">🎲 Juz Challenge</button>
+        <button data-tab="wird">📿 My Daily Wird</button>
+      </div>
+      <div class="tabpane on" id="tab-surah">
+        <input id="search" class="search" type="search" placeholder="Search surah by name or number, e.g. Baqarah, 36, الملك, or 2:255" autocomplete="off">
+        <div class="grid" id="surahGrid"></div>
+      </div>
+      <div class="tabpane" id="tab-juz">
+        <p class="hintp">Play a Juz section by section (hizb quarters). Stars show how many of its ayahs you have mastered.</p>
+        <div class="grid juzgrid" id="juzGrid"></div>
+      </div>
+      <div class="tabpane" id="tab-jc">
+        <p class="hintp">Random ayahs drawn from the Juz you choose. A new draw every round.</p>
+        <div class="pace" id="jcCount"><span class="lbl">Ayahs per round:</span><button data-n="10" class="sel">10</button><button data-n="20">20</button><button data-n="30">30</button></div>
+        <div class="grid juzgrid" id="jcGrid"></div>
+      </div>
+      <div class="tabpane" id="tab-wird">
+        <div id="wirdBox"><p class="hintp">Loading your Quran Recorder logs…</p></div>
+      </div>
     </div>
-    <footer class="foot">Text: Uthmani (Tanzil) · Translation: Sahih International · Recitation: Mishary Alafasy (optional, streamed) · <a href="https://github.com/mrbugimposter3-ship-it/quran-rush" target="_blank" rel="noopener">Source</a></footer>
+    <footer class="foot">All 114 surahs · 6236 ayahs · Text: Uthmani (Tanzil) · Translation: Sahih International · Recitation: Mishary Alafasy (optional, streamed) · <a href="https://github.com/mrbugimposter3-ship-it/quran-rush" target="_blank" rel="noopener">Source</a></footer>
   </section>
 
   <!-- GAME -->
@@ -127,9 +148,19 @@
     </div>
   </section>
 
+  <!-- section picker -->
+  <div class="overlay" id="sheetOv">
+    <div class="panel sheet">
+      <button class="xbtn" id="sheetX" aria-label="Close">✕</button>
+      <div class="rtitle" id="shTitle"></div>
+      <div class="rsub" id="shSub"></div>
+      <div id="shBody"></div>
+    </div>
+  </div>
+  <div class="overlay" id="loadOv"><div class="panel"><div class="spin"></div><div id="loadTxt">Loading ayahs…</div></div></div>
   <div class="toast" id="levelToast"></div>
 </div>
-<script src="data.js"></script>
+<script src="data/meta.js"></script>
 <script src="game.js"></script>
 </body>
 </html>

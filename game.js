@@ -1,13 +1,45 @@
-/* Quran Rush — fast-paced, tap-heavy Quran memorization. Plain JS, no build step. */
+/* Quran Rush — fast-paced, tap-heavy Quran memorization. Plain JS, no build step.
+   Full Quran: metadata in data/meta.js, ayah text lazy-loaded per surah from data/s/NNN.json. */
 (() => {
 'use strict';
-const S = window.SURAHS || [];
+const M = window.QMETA, SUR = M.surahs;          // SUR[i] = {id,name,meaning,arName,count,type}
 const $ = id => document.getElementById(id);
 const rand = (a, b) => a + Math.random() * (b - a);
 const pick = arr => arr[(Math.random() * arr.length) | 0];
 const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
-const fmt = s => { s = Math.max(0, Math.floor(s)); return String((s / 60) | 0).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
+const fmt = s => { s = Math.max(0, Math.floor(s)); const h = (s / 3600) | 0, m = ((s % 3600) / 60) | 0; return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(s % 60).padStart(2, '0'); };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const sm = sid => SUR[sid - 1];
+const MODE_NAME = { rush: 'Word Rush', blitz: 'Next Ayah Blitz', catch: 'Missing Word Catch' };
+
+/* ---------- Quran index: global numbers, Juz, hizb quarters ---------- */
+const START = [0]; { let g = 1; SUR.forEach(s => { START[s.id] = g; g += s.count; }); }
+const TOTAL = 6236;
+const glob = (sid, n) => START[sid] + n - 1;
+function refOf(g) { let lo = 1, hi = 114; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (START[mid] <= g) lo = mid; else hi = mid - 1; } return [lo, g - START[lo] + 1]; }
+const JUZG = M.juz.map(r => glob(r[0], r[1])).concat([TOTAL + 1]);   // 31 entries
+const HQG = M.hq.map(r => glob(r[0], r[1])).concat([TOTAL + 1]);     // 241 entries
+const juzOf = (sid, n) => { const g = glob(sid, n); let j = 0; while (JUZG[j + 1] <= g) j++; return j + 1; };
+const rangeRefs = (g1, g2) => { const out = []; for (let g = g1; g <= g2; g++) out.push(refOf(g)); return out; };
+const juzRefs = j => rangeRefs(JUZG[j - 1], JUZG[j] - 1);
+const refStr = r => r[0] + ':' + r[1];
+
+/* ---------- lazy text loading ---------- */
+const TXT = {}, LOADING = {};
+function loadSurah(sid) {
+  if (TXT[sid]) return Promise.resolve(TXT[sid]);
+  if (!LOADING[sid]) LOADING[sid] = fetch('data/s/' + String(sid).padStart(3, '0') + '.json')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(rows => (TXT[sid] = rows)).catch(e => { delete LOADING[sid]; throw e; });
+  return LOADING[sid];
+}
+function ensure(sids) { return Promise.all([...new Set(sids)].filter(x => x >= 1 && x <= 114).map(loadSurah)); }
+const AY = new Map();
+function ayah(sid, n) {
+  const k = sid * 1000 + n; let a = AY.get(k);
+  if (!a) { const r = TXT[sid][n - 1]; a = { sid, n, ar: r[0], tr: r[1], en: r[2], g: glob(sid, n), s: sm(sid) }; AY.set(k, a); }
+  return a;
+}
 
 /* ---------- Arabic word handling ---------- */
 const MARKS = /[\u06D6-\u06ED]/g;           // Quranic annotation / pause marks
@@ -29,16 +61,21 @@ const letters = k => k.replace(DIAC, '').length;
 const wordCache = new Map();
 const wordsOf = a => { if (!wordCache.has(a)) wordCache.set(a, splitWords(a.ar)); return wordCache.get(a); };
 
-/* ---------- persistence ---------- */
+/* ---------- persistence (v1 saves remain valid; new fields are added) ---------- */
 const KEY = 'quranRush.v1';
-const P = Object.assign({ xp: 0, sound: true, audio: false, best: {}, mast: {}, mode: 'rush', pace: 1, plays: 0 },
+const P = Object.assign({ xp: 0, sound: true, audio: false, best: {}, mast: {}, mode: 'rush', pace: 1, plays: 0, cont: {}, sec: 10, tab: 'surah', jcN: 10, wirdPlayed: {} },
   (() => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } })());
+['cont', 'wirdPlayed', 'best', 'mast'].forEach(k => { if (!P[k] || typeof P[k] !== 'object') P[k] = {}; });
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(P)); } catch (e) {} };
 const need = l => 80 + (l - 1) * 70;              // XP needed to go from level l to l+1
 function levelInfo(xp) { let l = 1, x = xp; while (x >= need(l)) { x -= need(l); l++; } return { l, x, n: need(l) }; }
-function masteredSet(sid) { return new Set(P.mast[sid] || []); }
-function addMastered(sid, n) { const s = masteredSet(sid); s.add(n); P.mast[sid] = [...s]; }
-
+const MS = {};                                     // cached Sets of mastered ayahs per surah
+function masteredSet(sid) { if (!MS[sid]) MS[sid] = new Set(P.mast[sid] || []); return MS[sid]; }
+function addMastered(sid, n) { const s = masteredSet(sid); if (!s.has(n)) { s.add(n); P.mast[sid] = [...s]; } }
+const isMast = r => masteredSet(r[0]).has(r[1]);
+function fracMast(refs) { if (!refs.length) return 0; let k = 0; for (const r of refs) if (isMast(r)) k++; return k / refs.length; }
+function starsOf(f) { return f >= 1 ? 3 : f >= 2 / 3 ? 2 : f >= 1 / 3 ? 1 : 0; }
+function starsHtml(f) { const n = starsOf(f); return '<span class="stars">' + '★'.repeat(n) + '<span class="off">' + '★'.repeat(3 - n) + '</span></span>'; }
 /* ---------- sound (generated chimes, no files) ---------- */
 let AC = null;
 function ac() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } if (AC && AC.state === 'suspended') AC.resume(); return AC; }
@@ -83,47 +120,268 @@ function renderProfile() {
   setTog($('togSound'), P.sound, '🔔 Chimes'); setTog($('togAudio'), P.audio, '🎧 Recitation');
 }
 function setTog(b, on, label) { b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.textContent = label + ': ' + (on ? 'On' : 'Off'); }
+const norm = s => String(s).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '').replace(/(.)\1+/g, '$1').replace(/h$/, '');
+const normAr = s => String(s).replace(DIAC, '').replace(/[ٱأإآ]/g, 'ا').replace(/^سورة\s*/, '').replace(/\s/g, '').replace(/^ال/, '');
+const SURREFS = {}; const surRefs = sid => SURREFS[sid] || (SURREFS[sid] = rangeRefs(START[sid], START[sid] + sm(sid).count - 1));
+function bestLine(key) {
+  const b = P.best[key] || {}, parts = [];
+  if (b.rush) parts.push('Rush ' + b.rush.score + (b.rush.time ? ' · ' + fmt(b.rush.time) : ''));
+  if (b.blitz) parts.push('Blitz ' + b.blitz.score);
+  if (b.catch) parts.push('Catch ' + b.catch.score + (b.catch.time ? ' · ' + fmt(b.catch.time) : ''));
+  return parts.join(' | ');
+}
 function renderGrid() {
   const g = $('surahGrid'); g.innerHTML = '';
-  S.forEach((s, i) => {
-    const m = masteredSet(s.id).size, b = P.best[s.id] || {};
-    const parts = [];
-    if (b.rush) parts.push('Rush ' + b.rush.score + (b.rush.time ? ' · ' + fmt(b.rush.time) : ''));
-    if (b.blitz) parts.push('Blitz ' + b.blitz.score);
-    if (b.catch) parts.push('Catch ' + b.catch.score + (b.catch.time ? ' · ' + fmt(b.catch.time) : ''));
-    const el = document.createElement('button');
-    el.className = 'scard' + (m >= s.ayahs.length ? ' done' : '');
-    el.dataset.sid = s.id;
-    el.innerHTML = '<div class="sn">' + s.id + ' · ' + s.ayahs.length + ' ayahs</div><div class="sar">' + esc(s.arName.replace(/^سُورَةُ\s*/, '')) +
-      '</div><div class="sen">' + esc(s.name) + '</div><div class="smean">' + esc(s.meaning) + '</div><div class="sbar"><i style="width:' +
-      (100 * m / s.ayahs.length) + '%"></i></div><div class="sbest">' + esc(parts.join(' | ') || 'Not played yet') + '</div>';
-    el.addEventListener('click', () => { ac(); startGame(P.mode, i); });
+  const q = $('search').value.trim();
+  let list = SUR, jump = null;
+  const mref = q.match(/^(\d{1,3})\s*[:.\s]\s*(\d{1,3})$/);
+  if (mref && +mref[1] >= 1 && +mref[1] <= 114) { jump = [+mref[1], Math.min(+mref[2] || 1, sm(+mref[1]).count)]; list = [sm(jump[0])]; }
+  else if (q) {
+    const nq = norm(q), aq = normAr(q), num = /^\d+$/.test(q) ? +q : 0;
+    list = SUR.filter(s => num ? String(s.id).startsWith(q) : ((nq && (norm(s.name).includes(nq) || norm(s.meaning).includes(nq))) || (aq && normAr(s.arName).includes(aq))));
+  }
+  if (jump) {
+    const el = document.createElement('button'); el.className = 'scard'; el.dataset.jump = refStr(jump);
+    el.innerHTML = '<div class="sn">Jump to ayah</div><div class="sen">▶ Start at ' + refStr(jump) + '</div><div class="smean">' + esc(sm(jump[0]).name) + ', ' + P.sec + ' ayahs from ayah ' + jump[1] + '</div>';
+    el.addEventListener('click', () => { const s = sm(jump[0]); const to = Math.min(s.count, jump[1] + P.sec - 1); playSurahRange(jump[0], jump[1], to); });
     g.appendChild(el);
+  }
+  if (!list.length) { g.innerHTML = '<p class="hintp">No surah matches “' + esc(q) + '”.</p>'; return; }
+  const frag = document.createDocumentFragment();
+  list.forEach(s => {
+    const m = masteredSet(s.id).size, f = m / s.count, line = bestLine(s.id), c = P.cont[s.id];
+    const el = document.createElement('button');
+    el.className = 'scard'; el.dataset.sid = s.id;
+    el.innerHTML = (c && c > 1 && c <= s.count ? '<span class="cont">↻ ' + s.id + ':' + c + '</span>' : '') +
+      '<div class="sn">' + s.id + ' · ' + s.count + ' ayahs · Juz ' + juzOf(s.id, 1) + '</div><div class="sar">' + esc(s.arName.replace(/^سُورَةُ\s*/, '')) +
+      '</div><div class="sen">' + esc(s.name) + ' ' + starsHtml(f) + '</div><div class="smean">' + esc(s.meaning) + '</div><div class="sbar"><i style="width:' +
+      (100 * f) + '%"></i></div><div class="sbest">' + esc(line || (m ? m + ' / ' + s.count + ' mastered' : 'Not played yet')) + '</div>';
+    el.addEventListener('click', () => { ac(); openSurah(s.id); });
+    frag.appendChild(el);
   });
+  g.appendChild(frag);
+}
+function juzCard(j, extra) {
+  const r = M.juz[j - 1], f = fracMast(juzRefs(j)), el = document.createElement('button');
+  el.className = 'scard jcard'; el.dataset.juz = j;
+  el.innerHTML = '<div class="sn">Juz</div><div class="jn">' + j + ' ' + starsHtml(f) + '</div><div class="smean">from ' + esc(sm(r[0]).name) + ' ' + refStr(r) +
+    '</div><div class="sbar"><i style="width:' + (100 * f) + '%"></i></div><div class="sbest">' + esc(extra || '') + '</div>';
+  return el;
+}
+function renderJuz() {
+  const g = $('juzGrid'); g.innerHTML = '';
+  for (let j = 1; j <= 30; j++) { const el = juzCard(j, bestLine('j' + j)); el.addEventListener('click', () => { ac(); openJuz(j); }); g.appendChild(el); }
+  const c = $('jcGrid'); c.innerHTML = '';
+  document.querySelectorAll('#jcCount button').forEach(b => b.classList.toggle('sel', +b.dataset.n === P.jcN));
+  for (let j = 1; j <= 30; j++) { const el = juzCard(j, bestLine('jc' + j) || '🎲 random ' + P.jcN); el.addEventListener('click', () => { ac(); playJuzChallenge(j); }); c.appendChild(el); }
+}
+function setTab(t) {
+  P.tab = t; save();
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('sel', b.dataset.tab === t));
+  document.querySelectorAll('.tabpane').forEach(p => p.classList.toggle('on', p.id === 'tab-' + t));
+  if (t === 'wird') renderWird(); if (t === 'juz' || t === 'jc') renderJuz();
 }
 function renderHome() {
   renderProfile(); renderGrid();
   document.querySelectorAll('.mode').forEach(b => b.classList.toggle('sel', b.dataset.mode === P.mode));
   document.querySelectorAll('#pace button').forEach(b => b.classList.toggle('sel', +b.dataset.pace === P.pace));
+  setTab(P.tab || 'surah');
 }
-document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => { P.mode = b.dataset.mode; save(); renderHome(); sfx.tick(); }));
-document.querySelectorAll('#pace button').forEach(b => b.addEventListener('click', () => { P.pace = +b.dataset.pace; save(); renderHome(); sfx.tick(); }));
+document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => { P.mode = b.dataset.mode; save(); document.querySelectorAll('.mode').forEach(x => x.classList.toggle('sel', x === b)); sfx.tick(); }));
+document.querySelectorAll('#pace button').forEach(b => b.addEventListener('click', () => { P.pace = +b.dataset.pace; save(); document.querySelectorAll('#pace button').forEach(x => x.classList.toggle('sel', x === b)); sfx.tick(); }));
+document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { setTab(b.dataset.tab); sfx.tick(); }));
+document.querySelectorAll('#jcCount button').forEach(b => b.addEventListener('click', () => { P.jcN = +b.dataset.n; save(); renderJuz(); }));
+$('search').addEventListener('input', renderGrid);
 $('togSound').addEventListener('click', () => { P.sound = !P.sound; save(); renderProfile(); sfx.tick(); });
 $('togAudio').addEventListener('click', () => { P.audio = !P.audio; save(); renderProfile(); });
 
+/* ---------- section picker sheet ---------- */
+function openSheet(title, sub, html) { $('shTitle').textContent = title; $('shSub').textContent = sub; $('shBody').innerHTML = html; $('sheetOv').classList.add('on'); }
+const closeSheet = () => $('sheetOv').classList.remove('on');
+$('sheetX').addEventListener('click', closeSheet);
+$('sheetOv').addEventListener('click', e => { if (e.target === $('sheetOv')) closeSheet(); });
+function chunk(refs, size) { const out = []; for (let i = 0; i < refs.length; i += size) out.push(refs.slice(i, i + size)); return out; }
+function secLabel(sec) { const a = sec[0], b = sec[sec.length - 1]; return a[0] === b[0] ? (a[1] === b[1] ? refStr(a) : a[0] + ':' + a[1] + '–' + b[1]) : refStr(a) + '–' + refStr(b); }
+function sizeChips() { return '<div class="shrow chips" id="shSize"><span class="lbl">Section size:</span>' + [5, 10, 20].map(n => '<button data-n="' + n + '"' + (P.sec === n ? ' class="sel"' : '') + '>' + n + '</button>').join('') + '</div>'; }
+function secGridHtml(secs, curRef) {
+  return '<div class="secgrid">' + secs.map((sec, i) => '<button class="sec' + (curRef && sec.some(r => r[0] === curRef[0] && r[1] === curRef[1]) ? ' cur' : '') + '" data-i="' + i + '"><b>' + esc(secLabel(sec)) + '</b>' + starsHtml(fracMast(sec)) + '</button>').join('') + '</div>';
+}
+function bindSecs(secs, mk) {
+  document.querySelectorAll('#shBody .sec').forEach(b => b.addEventListener('click', () => { const i = +b.dataset.i; closeSheet(); mk(secs, i); }));
+}
+function openSurah(sid, keepSheet) {
+  const s = sm(sid), refs = surRefs(sid);
+  if (s.count <= 10 && !keepSheet) return startGame(P.mode, { kind: 'surah', sid, refs, whole: true, label: s.name });
+  const secs = chunk(refs, P.sec), c = P.cont[sid];
+  let html = '<div class="shrow">';
+  if (c && c > 1 && c <= s.count) html += '<button class="big" id="shCont">↻ Continue from ' + sid + ':' + c + '</button>';
+  html += '<button class="' + (c > 1 ? 'ghost' : 'big') + '" id="shWhole">Whole surah · ' + s.count + ' ayahs</button></div>';
+  html += sizeChips() + '<div class="h3">Sections</div>' + secGridHtml(secs, c ? [sid, c] : null);
+  html += '<div class="h3">Custom range</div><div class="shrow custom">Ayah <input type="number" id="shFrom" min="1" max="' + s.count + '" value="' + (c || 1) + '"> to <input type="number" id="shTo" min="1" max="' + s.count + '" value="' + Math.min(s.count, (c || 1) + P.sec - 1) + '"><button class="ghost" id="shGo">▶ Start</button></div>';
+  openSheet(s.id + '. ' + s.name, s.meaning + ' · ' + s.count + ' ayahs · ' + Math.round(100 * fracMast(refs)) + '% mastered · ' + MODE_NAME[P.mode], html);
+  if ($('shCont')) $('shCont').addEventListener('click', () => { closeSheet(); playSurahRange(sid, c, Math.min(s.count, c + P.sec - 1)); });
+  $('shWhole').addEventListener('click', () => { closeSheet(); startGame(P.mode, { kind: 'surah', sid, refs, whole: true, label: s.name }); });
+  $('shGo').addEventListener('click', () => {
+    let a = Math.max(1, Math.min(s.count, +$('shFrom').value || 1)), b = Math.max(1, Math.min(s.count, +$('shTo').value || a)); if (b < a) [a, b] = [b, a];
+    closeSheet(); playSurahRange(sid, a, b);
+  });
+  document.querySelectorAll('#shSize button').forEach(b => b.addEventListener('click', () => { P.sec = +b.dataset.n; save(); openSurah(sid, true); }));
+  bindSecs(secs, (secs2, i) => startGame(P.mode, { kind: 'surah', sid, refs: secs2[i], secs: secs2, si: i, label: s.name + ' ' + secLabel(secs2[i]) }));
+}
+function playSurahRange(sid, a, b) {
+  const s = sm(sid), refs = surRefs(sid).slice(a - 1, b), secs = chunk(surRefs(sid).slice(b), P.sec);
+  // "next section" continues after this custom range in chunks of the chosen size
+  startGame(P.mode, { kind: 'surah', sid, refs, whole: a === 1 && b === s.count, label: s.name + ' ' + sid + ':' + a + (b > a ? '–' + b : ''), secs: [refs].concat(secs), si: 0 });
+}
+function openJuz(j) {
+  const secs = [];
+  for (let q = (j - 1) * 8; q < j * 8; q++) secs.push(rangeRefs(HQG[q], HQG[q + 1] - 1));
+  const refs = juzRefs(j);
+  let html = '<div class="shrow"><button class="ghost" id="shWhole">Whole Juz · ' + refs.length + ' ayahs</button></div><div class="h3">Hizb quarters (rubʿ)</div>' +
+    '<div class="secgrid">' + secs.map((sec, i) => '<button class="sec" data-i="' + i + '"><small>Hizb ' + (2 * j - 1 + (i >> 2)) + ' · ' + ['¼', '½', '¾', '1'][i & 3] + '</small><b>' + esc(secLabel(sec)) + '</b>' + starsHtml(fracMast(sec)) + ' <small>' + sec.length + '</small></button>').join('') + '</div>';
+  openSheet('Juz ' + j, 'From ' + sm(M.juz[j - 1][0]).name + ' ' + refStr(M.juz[j - 1]) + ' · ' + refs.length + ' ayahs · ' + Math.round(100 * fracMast(refs)) + '% mastered · ' + MODE_NAME[P.mode], html);
+  $('shWhole').addEventListener('click', () => { closeSheet(); startGame(P.mode, { kind: 'juz', juz: j, refs, label: 'Juz ' + j }); });
+  bindSecs(secs, (s2, i) => startGame(P.mode, { kind: 'juz', juz: j, refs: s2[i], secs: s2, si: i, label: 'Juz ' + j + ' · ' + secLabel(s2[i]) }));
+}
+function playJuzChallenge(j) {
+  const refs = shuffle(juzRefs(j).slice()).slice(0, P.jcN);
+  startGame(P.mode, { kind: 'jc', juz: j, refs, label: '🎲 Juz ' + j + ' Challenge', random: true });
+}
+/* ---------- My Daily Wird: ayahs logged in Quran Recorder ---------- */
+const REC_KEY = 'quranRecorder.logs.v1';                 // Quran Recorder's localStorage key (same github.io origin)
+const REC_REPO = 'mrbugimposter3-ship-it/quran-recorder';
+const REC_URL = 'https://mrbugimposter3-ship-it.github.io/quran-recorder/';
+const WCACHE = 'quranRush.wirdCache.v1';
+const W = { loaded: false, loading: null, days: {}, src: { local: 0, repo: 0, cache: 0 }, err: '' };
+const dayKey = (d = new Date()) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+function addEntries(date, entries, srcName) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Array.isArray(entries)) return;
+  const day = W.days[date] || (W.days[date] = new Map());
+  let added = 0;
+  for (const e of entries) {
+    if (!e || (e.type !== 'ayah-stamp' && e.type !== 'recitation')) continue;   // kalima stamps have no ayah
+    const sid = +e.surah, n = +e.ayah;
+    if (!(sid >= 1 && sid <= 114 && n >= 1 && n <= sm(sid).count)) continue;
+    const id = e.id || (e.ts + ':' + sid + ':' + n);
+    if (!day.has(id)) { day.set(id, { sid, n, ts: e.ts || '' }); added++; }
+  }
+  W.src[srcName] += added;
+}
+async function fetchRepoLogs() {
+  const r = await fetch('https://api.github.com/repos/' + REC_REPO + '/contents/logs', { headers: { Accept: 'application/vnd.github+json' } });
+  if (!r.ok) throw new Error('GitHub API ' + r.status);
+  const files = (await r.json()).filter(f => /^\d{4}-\d{2}-\d{2}\.json$/.test(f.name));
+  const out = {};
+  await Promise.all(files.map(async f => {
+    const url = f.download_url || ('https://raw.githubusercontent.com/' + REC_REPO + '/main/logs/' + f.name);
+    const x = await fetch(url, { cache: 'no-cache' }); if (!x.ok) return;
+    const j = await x.json(); out[j.date || f.name.slice(0, 10)] = j.entries || [];
+  }));
+  return out;
+}
+function loadWird(force) {
+  if (W.loading && !force) return W.loading;
+  W.days = {}; W.src = { local: 0, repo: 0, cache: 0 }; W.err = '';
+  W.loading = (async () => {
+    try { const L = JSON.parse(localStorage.getItem(REC_KEY) || '{}'); for (const d in L) addEntries(d, L[d], 'local'); } catch (e) {}
+    try {
+      const repo = await fetchRepoLogs();
+      for (const d in repo) addEntries(d, repo[d], 'repo');
+      try { localStorage.setItem(WCACHE, JSON.stringify({ at: Date.now(), days: repo })); } catch (e) {}
+    } catch (e) {
+      W.err = String(e.message || e);
+      try { const C = JSON.parse(localStorage.getItem(WCACHE) || 'null'); if (C) for (const d in C.days) addEntries(d, C.days[d], 'cache'); } catch (e2) {}
+    }
+    W.loaded = true;
+  })();
+  return W.loading;
+}
+function wirdRefs(dates) {
+  const seen = new Set(), out = [];
+  for (const d of dates) for (const e of (W.days[d] || new Map()).values()) { const k = e.sid * 1000 + e.n; if (!seen.has(k)) { seen.add(k); out.push([e.sid, e.n]); } }
+  return out.sort((a, b) => glob(a[0], a[1]) - glob(b[0], b[1]));
+}
+const loggedDates = () => Object.keys(W.days).filter(d => W.days[d].size).sort();
+function lastNDates(n) { const out = []; const d = new Date(); for (let i = 0; i < n; i++) { out.push(dayKey(d)); d.setDate(d.getDate() - 1); } return out; }
+function streakInfo() {
+  const has = d => W.days[d] && W.days[d].size;
+  const d = new Date(); if (!has(dayKey(d))) d.setDate(d.getDate() - 1);
+  let cur = 0; while (has(dayKey(d))) { cur++; d.setDate(d.getDate() - 1); }
+  const ds = loggedDates(); let best = 0, run = 0, prev = null;
+  for (const k of ds) { const t = new Date(k + 'T12:00:00'); run = prev && Math.round((t - prev) / 864e5) === 1 ? run + 1 : 1; best = Math.max(best, run); prev = t; }
+  return { cur, best };
+}
+async function renderWird() {
+  const box = $('wirdBox');
+  if (!W.loaded) { box.innerHTML = '<p class="hintp">Loading your Quran Recorder logs…</p>'; await loadWird(); if (P.tab !== 'wird') return; }
+  const dates = loggedDates();
+  const srcTxt = 'Sources: this browser ' + (W.src.local ? '✓ ' + W.src.local + ' entries' : '— none') + ' · GitHub logs ' +
+    (W.src.repo ? '✓ ' + W.src.repo + ' new entries' : W.err ? '✗ (' + esc(W.err) + ')' + (W.src.cache ? ' · cached copy ' + W.src.cache : '') : '— none') +
+    ' · <a href="#" id="wReload" style="color:var(--gold)">reload</a>';
+  if (!dates.length) {
+    box.innerHTML = '<div class="wsrc">' + srcTxt + '</div><div class="panel" style="max-width:none;text-align:left"><h2>No wird logged yet</h2><p class="hintp">Log the ayahs you recite each day in <a href="' + REC_URL + '" target="_blank" rel="noopener" style="color:var(--gold)">Quran Recorder</a> (⏱ timestamp or record an ayah). They will appear here so you can drill exactly those ayahs.</p><a class="big" style="text-decoration:none" href="' + REC_URL + '" target="_blank" rel="noopener">Open Quran Recorder ↗</a></div>';
+    $('wReload').addEventListener('click', e => { e.preventDefault(); W.loaded = false; loadWird(true).then(renderWird); });
+    return;
+  }
+  const today = dayKey(), tRefs = wirdRefs([today]), w7 = wirdRefs(lastNDates(7)), all = wirdRefs(dates), st = streakInfo();
+  const opt = (id, title, refs, sub) => '<button class="wopt" id="' + id + '"' + (refs.length ? '' : ' disabled style="opacity:.5"') + '><b>' + title + ' ' + (refs.length ? starsHtml(fracMast(refs)) : '') + '</b><span>' + (refs.length ? refs.length + ' ayahs · ' + Math.round(100 * fracMast(refs)) + '% mastered' : sub) + '</span></button>';
+  let html = '<div class="wsrc">' + srcTxt + '</div>';
+  html += '<div class="streak"><div>🔥 Logging streak <b>' + st.cur + '</b> day' + (st.cur === 1 ? '' : 's') + '</div><div>Best <b>' + st.best + '</b></div><div>Days logged <b>' + dates.length + '</b></div><div>Unique ayahs <b>' + all.length + '</b></div></div>';
+  html += '<div class="wopts">' + opt('wToday', '☀️ Today', tRefs, 'Nothing logged today yet') + opt('w7', '📅 Last 7 days', w7, 'Nothing in the last 7 days') + opt('wAll', '📚 All logged', all, '') +
+    '<div class="wopt"><b>🗓 A specific date</b><select id="wDate">' + dates.slice().reverse().map(d => '<option value="' + d + '">' + d + ' · ' + wirdRefs([d]).length + ' ayahs</option>').join('') + '</select><button class="ghost" id="wDateGo" style="width:100%;margin-top:6px">▶ Practise this day</button></div></div>';
+  // calendar: last 5 weeks, Monday-first
+  const end = new Date(); const startD = new Date(end); startD.setDate(end.getDate() - 34);
+  while ((startD.getDay() + 6) % 7 !== 0) startD.setDate(startD.getDate() - 1);
+  html += '<div class="h3">Streak calendar · green = ayahs logged · gold ring = practised here · ★ = day mastery</div><div class="cal">' + ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(x => '<div class="dow">' + x + '</div>').join('');
+  for (const d = new Date(startD); d <= end; d.setDate(d.getDate() + 1)) {
+    const k = dayKey(d), refs = wirdRefs([k]), n = refs.length, lv = n ? (n >= 100 ? 3 : n >= 30 ? 2 : 1) : 0, s = n ? starsOf(fracMast(refs)) : 0;
+    html += '<div class="d' + (lv ? ' l' + lv : '') + (P.wirdPlayed[k] ? ' played' : '') + (k === today ? ' today' : '') + '"' + (n ? ' data-date="' + k + '" title="' + k + ': ' + n + ' ayahs"' : ' title="' + k + '"') + '>' + (d.getDate() === 1 ? d.toLocaleString('en', { month: 'short' }) + ' 1' : d.getDate()) + (n ? '<span class="st">' + '★'.repeat(s) + (s ? '' : n) + '</span>' : '') + '</div>';
+  }
+  html += '</div><div class="h3">Per-day mastery</div><div class="daylist">' + dates.slice().reverse().map(d => { const r = wirdRefs([d]); return '<button class="wopt" data-date="' + d + '"><b>' + d + ' ' + starsHtml(fracMast(r)) + '</b><span>' + r.length + ' ayahs · ' + Math.round(100 * fracMast(r)) + '% mastered' + (P.wirdPlayed[d] ? ' · practised' : '') + '</span></button>'; }).join('') + '</div>';
+  box.innerHTML = html;
+  $('wReload').addEventListener('click', e => { e.preventDefault(); W.loaded = false; loadWird(true).then(renderWird); });
+  $('wToday').addEventListener('click', () => tRefs.length && openWird('Today (' + today + ')', tRefs, [today]));
+  $('w7').addEventListener('click', () => w7.length && openWird('Last 7 days', w7, lastNDates(7)));
+  $('wAll').addEventListener('click', () => openWird('All logged ayahs', all, dates));
+  $('wDateGo').addEventListener('click', () => { const d = $('wDate').value; openWird(d, wirdRefs([d]), [d]); });
+  box.querySelectorAll('[data-date]').forEach(el => el.addEventListener('click', () => { const d = el.dataset.date; openWird(d, wirdRefs([d]), [d]); }));
+}
+function openWird(title, refs, dates, keep) {
+  if (!refs.length) return;
+  const mk = (secs, i) => startGame(P.mode, { kind: 'wird', dates, refs: secs[i], secs, si: i, label: '📿 Wird ' + title + (secs.length > 1 ? ' · set ' + (i + 1) + '/' + secs.length : '') });
+  if (refs.length <= P.sec && !keep) return mk([refs], 0);
+  const secs = chunk(refs, P.sec);
+  openSheet('📿 ' + title, refs.length + ' logged ayahs · ' + Math.round(100 * fracMast(refs)) + '% mastered · ' + MODE_NAME[P.mode],
+    '<div class="shrow"><button class="big" id="shAllW">▶ Play all ' + refs.length + ' in sets of ' + P.sec + '</button></div>' + sizeChips() + '<div class="h3">Sets (mushaf order)</div>' + secGridHtml(secs));
+  $('shAllW').addEventListener('click', () => { closeSheet(); const firstOpen = Math.max(0, secs.findIndex(s => fracMast(s) < 1)); mk(secs, firstOpen); });
+  document.querySelectorAll('#shSize button').forEach(b => b.addEventListener('click', () => { P.sec = +b.dataset.n; save(); openWird(title, refs, dates, true); }));
+  bindSecs(secs, mk);
+}
 /* ---------- GAME STATE ---------- */
 let G = null;
 const objs = [];          // moving tiles / orbs / cards
 const parts = [];         // particles
 function show(screen) { [home, game].forEach(s => s.classList.toggle('active', s === screen)); }
-
-function startGame(mode, si) {
-  const s = S[si];
-  G = { mode, si, s, lvl: P.pace || 1, startLvl: P.pace || 1, score: 0, combo: 0, maxCombo: 0, hearts: 3, right: 0, wrong: 0,
-    taps: 0, elapsed: 0, qMax: 1, qLeft: 1, phase: 'count', paused: false, idx: 0, done: 0, lastTap: 0, cdT: 0, lastPrompt: -1, ayahsDone: 0 };
+const srcKey = src => src.kind === 'surah' ? String(src.sid) : src.kind === 'juz' ? 'j' + src.juz : src.kind === 'jc' ? 'jc' + src.juz : 'wird';
+let startToken = 0;
+async function startGame(mode, src) {
+  const tok = ++startToken;
+  if (src.random && src.kind === 'jc' && src.redraw) src.refs = shuffle(juzRefs(src.juz).slice()).slice(0, P.jcN);
+  const need = src.refs.map(r => r[0]);
+  if (mode === 'blitz') src.refs.forEach(r => { need.push(r[0] - 1, r[0] + 1); });
+  need.push(1);
+  const lo = $('loadOv'); const t = setTimeout(() => lo.classList.add('on'), 120);
+  try { await ensure(need); }
+  catch (e) { clearTimeout(t); $('loadTxt').textContent = 'Could not load ayahs (' + e.message + '). Check your connection and try again.'; lo.classList.add('on'); setTimeout(() => { lo.classList.remove('on'); $('loadTxt').textContent = 'Loading ayahs…'; }, 2600); return; }
+  clearTimeout(t); lo.classList.remove('on');
+  if (tok !== startToken) return;
+  const items = src.refs.map(r => ayah(r[0], r[1]));
+  G = { mode, src, items, lvl: P.pace || 1, score: 0, combo: 0, maxCombo: 0, hearts: 3, right: 0, wrong: 0,
+    taps: 0, elapsed: 0, qMax: 1, qLeft: 1, phase: 'count', paused: false, idx: 0, done: 0, lastTap: 0, lastPrompt: -1, ayahsDone: 0 };
+  G.ayah = items[0]; G.s = G.ayah.s;
   clearObjs(); parts.length = 0;
   show(game); closeOv(); resize();
-  $('hSurah').textContent = s.id + '. ' + s.name + ' · ' + ({ rush: 'Word Rush', blitz: 'Next Ayah Blitz', catch: 'Missing Word Catch' }[mode]);
+  $('hSurah').textContent = src.label + ' · ' + MODE_NAME[mode];
   if (mode === 'blitz') { G.qMax = G.qLeft = 60; }
   hud(); setCombo();
   strip.innerHTML = ''; $('pEn').textContent = ''; $('pMeta').textContent = 'Get ready…';
@@ -134,7 +392,7 @@ function countdown(cb) {
   const g0 = G;
   const step = () => {
     if (G !== g0) return;
-    if (n === 0) { el.innerHTML = '<b>GO!</b>'; sfx.go(); const g = G; setTimeout(() => { el.classList.remove('on'); if (G === g) cb(); }, 450); return; }
+    if (n === 0) { el.innerHTML = '<b>GO!</b>'; sfx.go(); setTimeout(() => { el.classList.remove('on'); if (G === g0) cb(); }, 450); return; }
     el.innerHTML = '<b>' + n + '</b>'; sfx.tick(); n--; setTimeout(step, 520);
   };
   step();
@@ -168,7 +426,6 @@ function resize() {
   if (G) layoutField();
 }
 addEventListener('resize', resize);
-
 /* ---------- objects ---------- */
 function clearObjs() { objs.forEach(o => o.el.remove()); objs.length = 0; field.innerHTML = ''; }
 function addObj(el, o) {
@@ -224,68 +481,93 @@ function nextQ() {
   hud();
 }
 function pf() { return Math.max(0.42, 1 - 0.055 * (G.lvl - 1)); }   // time pressure factor
+const LONG = 16;                                                    // ayahs longer than this get a windowed prompt
+const trunc = (t, n) => t.length > n ? t.slice(0, n).replace(/\s+\S*$/, '') + ' …' : t;
+function metaLine(a, what) { return a.s.name + ' ' + a.sid + ':' + a.n + (G.items.length > 1 ? ' · ' + (G.idx + 1) + ' / ' + G.items.length : '') + ' · ' + what; }
+// neighbouring ayahs of the same surah (for decoys), always loaded with the surah
+function neighbours(a, span) { const out = []; for (let n = Math.max(1, a.n - span); n <= Math.min(a.s.count, a.n + span); n++) if (n !== a.n) out.push(ayah(a.sid, n)); return out; }
+function decoyWords(a, exclude, nd) {
+  const pool = [];
+  neighbours(a, 15).forEach(b => wordsOf(b).forEach(w => { if (!exclude.has(w.key) && letters(w.key) >= 2) pool.push(w); }));
+  if (pool.length < nd * 3) for (let n = 1; n <= 7; n++) wordsOf(ayah(1, n)).forEach(w => { if (!exclude.has(w.key)) pool.push(w); });
+  shuffle(pool); const used = new Set(), out = [];
+  for (const w of pool) { if (out.length >= nd) break; if (used.has(w.key)) continue; used.add(w.key); out.push(w); }
+  return out;
+}
 
 /* --- Word Rush --- */
 function qRush() {
-  const a = G.s.ayahs[G.idx]; G.ayah = a; G.words = wordsOf(a); G.pos = 0; G.chunkStart = 0;
+  const a = G.items[G.idx]; G.ayah = a; G.s = a.s; G.words = wordsOf(a); G.pos = 0; G.chunkStart = 0;
   G.chunk = fw < 600 ? 5 : 7;
-  G.qMax = G.qLeft = (4 + 2.1 * G.words.length) * pf();
-  $('pMeta').textContent = 'Ayah ' + a.n + ' / ' + G.s.ayahs.length + ' · tap words in order (right → left)';
-  $('pEn').textContent = a.en;
-  prompt.querySelector('.pstrip').className = 'pstrip ar';
+  const waves = Math.ceil(G.words.length / G.chunk);
+  $('pMeta').textContent = metaLine(a, waves > 1 ? 'long ayah · ' + waves + ' waves · tap in order (right → left)' : 'tap words in order (right → left)');
+  $('pEn').textContent = trunc(a.en, G.words.length > LONG ? 160 : 400);
+  strip.className = 'pstrip ar';
   renderRushStrip(); layoutField(); spawnChunk();
 }
 function renderRushStrip() {
-  strip.innerHTML = G.words.map((w, i) => i < G.pos ? '<span class="w got">' + esc(w.text) + '</span>'
-    : '<span class="w slot' + (i === G.pos ? ' next' : '') + '">◌</span>').join(' ');
+  const W = G.words, n = W.length;
+  let from = 0, to = n;
+  if (n > LONG) { from = Math.max(0, G.chunkStart - 4); to = Math.min(n, Math.max(G.chunkEnd || 0, G.chunkStart + G.chunk)); }
+  let h = from > 0 ? '<span class="w slot">…</span> ' : '';
+  for (let i = from; i < to; i++) h += (i < G.pos ? '<span class="w got" data-i="' + i + '">' + esc(W[i].text) + '</span>' : '<span class="w slot' + (i === G.pos ? ' next' : '') + '" data-i="' + i + '">◌</span>') + ' ';
+  if (to < n) h += '<span class="w slot">…</span>';
+  strip.innerHTML = h;
 }
 function spawnChunk() {
   objs.filter(o => o.state === 'live').forEach(o => { o.el.remove(); o.state = 'dead'; });
   const end = Math.min(G.words.length, G.chunkStart + G.chunk);
   G.chunkEnd = end;
+  // timer is per wave, so very long ayahs (e.g. 2:282) stay playable
+  G.qMax = G.qLeft = (3.5 + 2.1 * (end - G.chunkStart)) * pf();
+  const waves = Math.ceil(G.words.length / G.chunk);
+  if (waves > 1) $('pMeta').textContent = metaLine(G.ayah, 'long ayah · wave ' + (Math.floor(G.chunkStart / G.chunk) + 1) + ' / ' + waves + ' · words ' + (G.chunkStart + 1) + '–' + end + ' of ' + G.words.length);
+  renderRushStrip();
   for (let i = G.chunkStart; i < end; i++) makeTile(G.words[i], { ok: true });
   const nd = G.lvl >= 3 ? Math.min(G.lvl - 2, fw < 600 ? 3 : 5) : 0;
-  if (nd) {
-    const own = new Set(G.words.map(w => w.key));
-    let pool = [];
-    G.s.ayahs.forEach(a => { if (a !== G.ayah) wordsOf(a).forEach(w => { if (!own.has(w.key)) pool.push(w); }); });
-    if (pool.length < nd) S.slice(0, 6).forEach(s2 => s2.ayahs.forEach(a => wordsOf(a).forEach(w => { if (!own.has(w.key)) pool.push(w); })));
-    const used = new Set();
-    shuffle(pool);
-    for (const w of pool) { if (used.size >= nd) break; if (used.has(w.key)) continue; used.add(w.key); makeTile(w, { ok: false }); }
-  }
+  if (nd) decoyWords(G.ayah, new Set(G.words.map(w => w.key)), nd).forEach(w => makeTile(w, { ok: false }));
 }
 
 /* --- Next Ayah Blitz --- */
-function preview(a) { const w = wordsOf(a); const k = fw < 600 ? 4 : 6; return w.slice(0, k).map(x => x.text).join(' ') + (w.length > k ? ' …' : ''); }
+function blitzPairs() {
+  if (G.bpairs) return G.bpairs;
+  const pr = [];
+  G.items.forEach(a => { if (a.n < a.s.count) pr.push([a, ayah(a.sid, a.n + 1)]); else if (a.n > 1) pr.push([ayah(a.sid, a.n - 1), a]); });
+  if (!pr.length) pr.push([ayah(1, 1), ayah(1, 2)]);
+  return (G.bpairs = pr);
+}
+function preview(a, k) { const w = wordsOf(a); return w.slice(0, k).map(x => x.text).join(' ') + (w.length > k ? ' …' : ''); }
 function qBlitz() {
-  const s = G.s, n = s.ayahs.length;
-  let i; do { i = (Math.random() * (n - 1)) | 0; } while (n > 2 && i === G.lastPrompt);
+  const pairs = blitzPairs();
+  let i; do { i = (Math.random() * pairs.length) | 0; } while (pairs.length > 1 && i === G.lastPrompt);
   G.lastPrompt = i;
-  const cur = s.ayahs[i], ans = s.ayahs[i + 1]; G.ayah = ans;
-  let pool = s.ayahs.filter((a, k) => k !== i && k !== i + 1);
-  shuffle(pool);
-  // prefer nearby ayahs from the same surah as decoys (harder), fill from neighbouring surahs if short
-  pool.sort((a, b) => Math.abs(a.n - ans.n) - Math.abs(b.n - ans.n));
-  pool = pool.slice(0, 6); shuffle(pool);
-  const si = G.si; let k = 1;
-  while (pool.length < 3) { const s2 = S[(si + k) % S.length]; k++; if (s2 !== s) pool.push(pick(s2.ayahs)); }
-  const seen = new Set([preview(ans)]); const dec = [];
-  for (const a of pool) { const p = preview(a); if (!seen.has(p)) { seen.add(p); dec.push(a); } if (dec.length === 3) break; }
-  for (let t = 0; dec.length < 3 && t < 50; t++) { const a = pick(pick(S).ayahs); const p = preview(a); if (!seen.has(p)) { seen.add(p); dec.push(a); } }
-  $('pMeta').textContent = 'Ayah ' + cur.n + ' of ' + s.name + ' · which ayah comes NEXT?';
+  const [cur, ans] = pairs[i]; G.ayah = ans; G.s = ans.s;
+  let pool = neighbours(ans, 8).filter(b => b !== cur);
+  shuffle(pool); pool.sort((a, b) => Math.abs(a.n - ans.n) - Math.abs(b.n - ans.n)); pool = shuffle(pool.slice(0, 6));
+  [ans.sid + 1, ans.sid - 1, 1].forEach(sid => { if (pool.length < 6 && TXT[sid]) for (let n = 1; n <= Math.min(4, sm(sid).count); n++) { const b = ayah(sid, n); if (b !== ans && b !== cur) pool.push(b); } });
+  // show enough words that every option is distinguishable
+  const base = fw < 600 ? 4 : 6; let k = base, dec = [];
+  for (; k <= 14; k++) {
+    const seen = new Set([preview(ans, k)]); dec = [];
+    for (const b of pool) { const p = preview(b, k); if (!seen.has(p)) { seen.add(p); dec.push(b); } if (dec.length === 3) break; }
+    if (dec.length === 3 && pool.slice(0, 3).every(b => dec.includes(b))) break;
+    if (k === 14) break;
+  }
+  const cw = wordsOf(cur);
+  $('pMeta').textContent = cur.s.name + ' ' + cur.sid + ':' + cur.n + ' · which ayah comes NEXT?';
   strip.className = 'pstrip ar blitzp';
-  strip.textContent = cur.ar; $('pEn').textContent = cur.en;
+  strip.textContent = cw.length > 18 ? '… ' + cw.slice(-16).map(w => w.text).join(' ') : cur.ar;
+  $('pEn').textContent = cw.length > 18 ? '…' + cur.en.slice(-150).replace(/^\S*\s/, ' ') : cur.en;
   layoutField();
   const opts = shuffle([{ a: ans, ok: true }].concat(dec.map(a => ({ a, ok: false }))));
-  const laneH = fh / 4, cw = Math.min(fw * 0.8, 560);
+  const laneH = fh / opts.length, cwid = Math.min(fw * (k > 8 ? 0.94 : 0.8), k > 8 ? 760 : 560);
   opts.forEach((op, lane) => {
     const el = document.createElement('div'); el.className = 'opt';
-    el.innerHTML = '<div class="oar">' + esc(preview(op.a)) + '</div>';
-    el.style.width = cw + 'px';
+    el.innerHTML = '<div class="oar">' + esc(preview(op.a, k)) + '</div>';
+    el.style.width = cwid + 'px';
     const o = addObj(el, { kind: 'opt', ok: op.ok, a: op.a, lane });
     o.x = rand(0, Math.max(1, fw - o.w)); o.ty = lane * laneH + Math.max(0, (laneH - o.h) / 2); o.y = o.ty;
-    const v = Math.min(260, 40 + G.lvl * 16) * rand(0.75, 1.2);
+    const v = Math.min(260, 40 + G.lvl * 16) * rand(0.75, 1.2) * (k > 8 ? 0.6 : 1);
     o.vx = Math.random() < 0.5 ? -v : v; o.vy = 0;
   });
   G.swapT = 2.6;
@@ -293,22 +575,20 @@ function qBlitz() {
 
 /* --- Missing Word Catch --- */
 function qCatch() {
-  const a = G.s.ayahs[G.idx]; G.ayah = a; const w = wordsOf(a);
+  const a = G.items[G.idx]; G.ayah = a; G.s = a.s; const w = wordsOf(a);
   let cands = w.map((x, i) => i).filter(i => letters(w[i].key) >= 3);
   if (!cands.length) cands = w.map((x, i) => i);
   G.blank = pick(cands); G.answer = w[G.blank];
   G.qMax = G.qLeft = Math.max(5.5, 13 - G.lvl * 0.7);
-  $('pMeta').textContent = 'Ayah ' + a.n + ' / ' + G.s.ayahs.length + ' · catch the missing word';
+  $('pMeta').textContent = metaLine(a, 'catch the missing word');
   strip.className = 'pstrip ar';
-  strip.innerHTML = w.map((x, i) => i === G.blank ? '<span class="blank" id="blank">' + esc(x.text) + '</span>' : '<span class="w">' + esc(x.text) + '</span>').join(' ');
-  $('pEn').textContent = a.en;
+  let from = 0, to = w.length;
+  if (w.length > LONG) { from = Math.max(0, G.blank - 7); to = Math.min(w.length, G.blank + 8); }
+  strip.innerHTML = (from ? '<span class="w slot">…</span> ' : '') + w.slice(from, to).map((x, j) => from + j === G.blank ? '<span class="blank" id="blank">' + esc(x.text) + '</span>' : '<span class="w">' + esc(x.text) + '</span>').join(' ') + (to < w.length ? ' <span class="w slot">…</span>' : '');
+  $('pEn').textContent = trunc(a.en, w.length > LONG ? 160 : 400);
   layoutField();
-  const nd = Math.min(7, 2 + G.lvl), used = new Set([G.answer.key]); const pool = [];
-  G.s.ayahs.forEach(b => wordsOf(b).forEach(x => { if (!used.has(x.key) && letters(x.key) >= 2) pool.push(x); }));
-  if (pool.length < nd) S.slice(0, 8).forEach(s2 => s2.ayahs.forEach(b => wordsOf(b).forEach(x => { if (!used.has(x.key)) pool.push(x); })));
-  shuffle(pool);
-  const list = [Object.assign({ ok: true }, G.answer)];
-  for (const x of pool) { if (list.length > nd) break; if (used.has(x.key)) continue; used.add(x.key); list.push(Object.assign({ ok: false }, x)); }
+  const nd = Math.min(7, 2 + G.lvl);
+  const list = [Object.assign({ ok: true }, G.answer)].concat(decoyWords(a, new Set([G.answer.key]), nd).map(x => Object.assign({ ok: false }, x)));
   shuffle(list).forEach((x, k) => {
     const el = document.createElement('div'); el.className = 'tile orb ar'; el.textContent = x.text; el.dataset.key = x.key;
     const o = addObj(el, { kind: 'orb', ok: x.ok, key: x.key, text: x.text });
@@ -350,12 +630,15 @@ function tapRush(o, x, y) {
   const exp = G.words[G.pos];
   if (o.key === exp.key) {
     good(x, y, 10);
-    const slot = strip.children[G.pos]; let tx = fw / 2, ty = -40;
+    const slot = strip.querySelector('[data-i="' + G.pos + '"]'); let tx = fw / 2, ty = -40;
     if (slot) { const r = slot.getBoundingClientRect(); tx = r.left + r.width / 2 - o.w / 2; ty = r.top - ftop + r.height / 2 - o.h / 2; }
     collect(o, tx, ty);
     G.pos++; renderRushStrip();
     if (G.pos >= G.words.length) return ayahDone();
-    if (G.pos >= G.chunkEnd) { G.chunkStart = G.pos; setTimeout(() => { if (G && G.phase === 'play') spawnChunk(); }, 160); }
+    if (G.pos >= G.chunkEnd) {
+      G.chunkStart = G.pos; G.score += Math.ceil(G.qLeft) * 3;
+      const g = G; setTimeout(() => { if (G === g && G.phase === 'play') spawnChunk(); }, 160);
+    }
   } else bad(o, x, y, 1.5);
 }
 function tapBlitz(o, x, y) {
@@ -363,8 +646,9 @@ function tapBlitz(o, x, y) {
     good(x, y, 100); collect(o, o.x, -o.h);
     objs.forEach(p => { if (p !== o) p.state = 'frozen'; });
     G.done++; if (G.done % 2 === 0) levelUp();
+    addMastered(G.ayah.sid, G.ayah.n); save();
     sfx.win();
-    const g = G; setTimeout(() => { if (G === g) showLearn(g.ayah, 'Next ayah: ' + g.ayah.n, 1500, () => nextQ()); }, 260);
+    const g = G; setTimeout(() => { if (G === g) showLearn(g.ayah, 'Next ayah: ' + g.ayah.sid + ':' + g.ayah.n, 1500, () => nextQ()); }, 260);
     G.phase = 'learnwait';
   } else { bad(o, x, y, 3); o.state = 'dim'; o.el.style.opacity = '.45'; }
 }
@@ -379,12 +663,17 @@ function tapCatch(o, x, y) {
 }
 function levelUp() { G.lvl++; toast('Level ' + G.lvl + ' · faster!'); }
 const PRAISE = ['MashaAllah!', 'Excellent!', 'Beautiful recall!', 'Well done!', 'BarakAllahu feek!', 'Perfect order!'];
+function markProgress(a) {
+  addMastered(a.sid, a.n);
+  if (G.src.kind === 'surah' || G.src.kind === 'juz') P.cont[a.sid] = a.n < a.s.count ? a.n + 1 : 1;   // "Continue from s:n"
+  save();
+}
 function ayahDone() {
   G.phase = 'learnwait';
   const bonus = Math.ceil(G.qLeft) * (G.mode === 'rush' ? 5 : 8);
   G.score += bonus; G.ayahsDone++;
   if (bonus) floater(game.clientWidth / 2, ftop + 30, 'Time bonus +' + bonus);
-  addMastered(G.s.id, G.ayah.n); save();
+  markProgress(G.ayah);
   G.done++; if (G.done % 2 === 0) levelUp();
   sfx.win(); sparkle(game.clientWidth / 2, ftop - 10, 30);
   objs.forEach(p => { if (p.state === 'live') p.state = 'frozen'; });
@@ -392,14 +681,17 @@ function ayahDone() {
   const g = G; setTimeout(() => { if (G === g) showLearn(g.ayah, pick(PRAISE), 2300, advance); }, 380);
 }
 function timeout() {
-  G.phase = 'learnwait'; G.hearts--; G.combo = 0; setCombo(); sfx.miss(); shake();
-  hud();
+  G.combo = 0; setCombo(); sfx.miss(); shake();
+  G.hearts--;
+  // long ayah in Word Rush: lose a heart but keep going with the same wave
+  if (G.mode === 'rush' && G.words.length > G.chunk && G.hearts > 0) { toast('Time! 💔 −1 heart'); spawnChunk(); hud(); return; }
+  G.phase = 'learnwait'; hud();
   const msg = G.hearts > 0 ? 'Time! Review this ayah' : 'Out of hearts — review the ayah';
   const g = G; setTimeout(() => { if (G === g) showLearn(g.ayah, msg, 2600, () => { if (G.hearts <= 0) finish(false); else advance(); }); }, 250);
 }
 function advance() {
   G.idx++;
-  if (G.idx >= G.s.ayahs.length) return finish(true);
+  if (G.idx >= G.items.length) return finish(true);
   nextQ();
 }
 
@@ -407,11 +699,13 @@ function advance() {
 let learnCb = null, learnT = 0, learnDur = 0, learnAudioDone = true;
 function showLearn(a, head, dur, cb) {
   if (!G) return;
-  G.phase = 'learn'; learnCb = cb; learnT = 0; learnDur = dur / 1000;
+  const nw = wordsOf(a).length;
+  G.phase = 'learn'; learnCb = cb; learnT = 0; learnDur = Math.min(9, dur / 1000 + Math.max(0, nw - 12) * 0.06);
   $('lHead').textContent = head;
-  $('lRef').textContent = G.s.name + ' (' + G.s.id + ':' + a.n + ')';
+  $('lRef').textContent = a.s.name + ' (' + a.sid + ':' + a.n + ') · Juz ' + juzOf(a.sid, a.n);
   $('lAr').textContent = a.ar; $('lTr').textContent = a.tr; $('lEn').textContent = a.en;
-  $('learn').classList.add('on');
+  document.querySelector('.lcard').classList.toggle('long', nw > 40);
+  $('learn').classList.add('on'); document.querySelector('.lcard').scrollTop = 0;
   learnAudioDone = true;
   if (P.audio) { learnAudioDone = false; playRecitation(a, () => { learnAudioDone = true; }); }
 }
@@ -421,38 +715,49 @@ function endLearn() {
   $('learn').classList.remove('on');
   cb();
 }
-$('learn').addEventListener('pointerdown', e => { e.preventDefault(); if (learnT > 0.25) endLearn(); });
+$('learn').addEventListener('pointerdown', e => { if (e.target.closest('.lcard') && e.target.closest('.lcard').scrollHeight > e.target.closest('.lcard').clientHeight + 4 && learnT < 1) return; e.preventDefault(); if (learnT > 0.25) endLearn(); });
 
 /* ---------- finish ---------- */
+function nextSrc(src) {
+  if (src.kind === 'jc') return Object.assign({}, src, { redraw: true });
+  if (!src.secs || src.si >= src.secs.length - 1) return null;
+  const si = src.si + 1, refs = src.secs[si];
+  const label = src.kind === 'surah' ? sm(src.sid).name + ' ' + secLabel(refs) : src.kind === 'juz' ? 'Juz ' + src.juz + ' · ' + secLabel(refs) : src.label.replace(/set \d+\/\d+/, 'set ' + (si + 1) + '/' + src.secs.length);
+  return Object.assign({}, src, { refs, si, label, whole: false });
+}
 function finish(win) {
   if (!G) return;
   G.phase = 'over'; clearObjs(); stopRecitation();
-  const sid = G.s.id; const b = P.best[sid] = P.best[sid] || {};
+  const key = srcKey(G.src); const b = P.best[key] = P.best[key] || {};
   const prev = b[G.mode]; const before = levelInfo(P.xp).l;
-  let newBest = [];
+  const newBest = [];
   const rec = Object.assign({}, prev || {});
   if (!prev || G.score > (prev.score || 0)) { rec.score = G.score; newBest.push('score'); }
-  if (win && G.mode !== 'blitz' && (!prev || !prev.time || G.elapsed < prev.time)) { rec.time = Math.round(G.elapsed); newBest.push('time'); }
+  if (win && G.mode !== 'blitz' && G.src.whole && (!prev || !prev.time || G.elapsed < prev.time)) { rec.time = Math.round(G.elapsed); newBest.push('time'); }
   b[G.mode] = rec;
+  if (G.src.kind === 'wird') G.src.dates.forEach(d => { P.wirdPlayed[d] = true; });
   const xpGain = Math.round(G.score / 10) + (win ? 40 : 0) + G.ayahsDone * 5;
   P.xp += xpGain; P.plays++; save();
   const after = levelInfo(P.xp).l;
   const acc = G.right + G.wrong ? Math.round(100 * G.right / (G.right + G.wrong)) : 0;
-  $('rTitle').textContent = G.mode === 'blitz' ? "Time's up!" : (win ? 'Surah complete! 🌟' : 'Keep practising');
-  $('rSub').textContent = G.s.name + ' · ' + ({ rush: 'Word Rush', blitz: 'Next Ayah Blitz', catch: 'Missing Word Catch' }[G.mode]);
+  $('rTitle').textContent = G.mode === 'blitz' ? "Time's up!" : (win ? (G.src.whole ? 'Surah complete! 🌟' : 'Section complete! 🌟') : 'Keep practising');
+  $('rSub').textContent = G.src.label + ' · ' + MODE_NAME[G.mode];
   const st = [['Score', G.score.toLocaleString()], ['Time', fmt(G.elapsed)], ['Accuracy', acc + '%'], ['Best streak', G.maxCombo],
-    [G.mode === 'blitz' ? 'Correct' : 'Ayahs', G.mode === 'blitz' ? G.right : G.ayahsDone + ' / ' + G.s.ayahs.length], ['XP', '+' + xpGain]];
+    [G.mode === 'blitz' ? 'Correct' : 'Ayahs', G.mode === 'blitz' ? G.right : G.ayahsDone + ' / ' + G.items.length], ['XP', '+' + xpGain]];
   $('rStats').innerHTML = st.map(s => '<div><b>' + s[1] + '</b><small>' + s[0] + '</small></div>').join('');
   $('rBest').textContent = (newBest.length ? '★ New best ' + newBest.join(' & ') + '! ' : '') +
-    'Best: ' + rec.score.toLocaleString() + (rec.time ? ' · fastest ' + fmt(rec.time) : '') + (after > before ? ' · Reached level ' + after + '!' : '');
-  $('btnNext').style.display = G.si < S.length - 1 ? '' : 'none';
+    'Best: ' + rec.score.toLocaleString() + (rec.time ? ' · fastest ' + fmt(rec.time) : '') + (after > before ? ' · Reached level ' + after + '!' : '') +
+    (G.src.kind === 'surah' && P.cont[G.src.sid] > 1 ? ' · Continue from ' + G.src.sid + ':' + P.cont[G.src.sid] : '');
+  const nx = nextSrc(G.src); G.next = nx;
+  $('btnNext').style.display = nx ? '' : 'none';
+  $('btnNext').textContent = G.src.kind === 'jc' ? '🎲 New draw ›' : 'Next section ›';
   $('resultOv').classList.add('on');
   if (win || G.mode === 'blitz') { sfx.win(); sparkle(game.clientWidth / 2, game.clientHeight / 3, 60); }
 }
 function closeOv() { $('resultOv').classList.remove('on'); $('pauseOv').classList.remove('on'); $('learn').classList.remove('on'); learnCb = null; }
-function quit() { stopRecitation(); clearObjs(); G = null; closeOv(); $('countdown').classList.remove('on'); show(home); renderHome(); }
-$('btnAgain').addEventListener('click', () => { const g = G; startGame(g.mode, g.si); });
-$('btnNext').addEventListener('click', () => { const g = G; startGame(g.mode, Math.min(S.length - 1, g.si + 1)); });
+function quit() { startToken++; stopRecitation(); clearObjs(); G = null; closeOv(); $('countdown').classList.remove('on'); show(home); renderHome(); }
+$('btnAgain').addEventListener('click', () => { const g = G; startGame(g.mode, g.src.kind === 'jc' ? Object.assign({}, g.src, { redraw: true }) : g.src); });
+$('btnNext').addEventListener('click', () => { const g = G; if (g.next) startGame(g.mode, g.next); });
 $('btnMenu').addEventListener('click', quit);
 function pause(on) {
   if (!G || G.phase === 'over') return;
@@ -557,13 +862,15 @@ function drawFx(dt) {
 
 /* ---------- test hooks (used by automated tests; harmless for players) ---------- */
 window.__qr = {
-  P, get G() { return G; },
-  start: (mode, si) => startGame(mode, si),
+  P, W, get G() { return G; },
+  start: (mode, src) => startGame(mode, src),
+  surRefs, juzRefs, wirdRefs, loggedDates, loadWird,
   expectedKey: () => !G ? null : G.mode === 'rush' ? (G.words[G.pos] || {}).key : G.mode === 'catch' ? G.answer.key : null,
   liveObjs: () => objs.filter(o => o.state === 'live').map(o => ({ key: o.key, ok: !!o.ok, el: o.el })),
   skipLearn: () => endLearn()
 };
 
 renderHome();
+loadWird();
 requestAnimationFrame(loop);
 })();
