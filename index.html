@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#06281d">
+<title>Quran Rush – Fast-Paced Quran Memorization</title>
+<meta name="description" content="A fast, tap-heavy arcade game for memorizing Al-Fatiha and Juz ʿAmma.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- HOME -->
+  <section id="home" class="screen active">
+    <header class="home-head">
+      <div class="brand">
+        <div class="brand-ar">سِبَاقُ ٱلْحِفْظِ</div>
+        <h1>Quran <span>Rush</span></h1>
+        <p class="tag">Tap fast. Recall faster. Fix the ayahs in your heart.</p>
+      </div>
+      <div class="profile">
+        <div class="lvl-badge"><small>LVL</small><b id="pLevel">1</b></div>
+        <div class="xpwrap"><div class="xpbar"><i id="pXpFill"></i></div><span id="pXpText">0 / 100 XP</span></div>
+        <div class="toggles">
+          <button class="tog" id="togSound" aria-pressed="true">🔔 Chimes: On</button>
+          <button class="tog" id="togAudio" aria-pressed="false">🎧 Recitation: Off</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="step">
+      <h2><span class="num">1</span> Choose a mode</h2>
+      <div class="modes" id="modes">
+        <button class="mode sel" data-mode="rush">
+          <div class="micon">✦</div><b>Word Rush</b>
+          <span>Words float around the screen. Tap them in reading order (right → left) before the timer runs out.</span>
+        </button>
+        <button class="mode" data-mode="blitz">
+          <div class="micon">⏱</div><b>Next Ayah Blitz</b>
+          <span>60 seconds. See an ayah, tap the ayah that comes next among 4 moving cards.</span>
+        </button>
+        <button class="mode" data-mode="catch">
+          <div class="micon">◎</div><b>Missing Word Catch</b>
+          <span>One word is missing. Catch the right word as the glowing orbs fly past.</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="step">
+      <h2><span class="num">2</span> Pace</h2>
+      <div class="pace" id="pace">
+        <button data-pace="1" class="sel">🌿 Calm</button>
+        <button data-pace="3">⚡ Fast</button>
+        <button data-pace="6">🔥 Blazing</button>
+      </div>
+    </div>
+
+    <div class="step">
+      <h2><span class="num">3</span> Pick a surah</h2>
+      <div class="grid" id="surahGrid"></div>
+    </div>
+    <footer class="foot">Text: Uthmani (Tanzil) · Translation: Sahih International · Recitation: Mishary Alafasy (optional, streamed) · <a href="https://github.com/mrbugimposter3-ship-it/quran-rush" target="_blank" rel="noopener">Source</a></footer>
+  </section>
+
+  <!-- GAME -->
+  <section id="game" class="screen">
+    <div class="hud">
+      <button class="hbtn" id="btnPause" aria-label="Pause">❚❚</button>
+      <div class="hud-mid">
+        <div class="hud-row">
+          <span id="hSurah" class="hsurah"></span>
+          <span class="hlvl">Lv <b id="hLvl">1</b></span>
+          <span id="hClock" class="hclock">00:00</span>
+        </div>
+        <div class="tbar"><i id="hTime"></i></div>
+      </div>
+      <div class="hud-right">
+        <div class="hscore" id="hScore">0</div>
+        <div class="hhearts" id="hHearts"></div>
+      </div>
+    </div>
+    <div class="prompt" id="prompt">
+      <div class="pmeta" id="pMeta"></div>
+      <div class="pstrip ar" id="pStrip" dir="rtl"></div>
+      <div class="pen" id="pEn"></div>
+    </div>
+    <div class="combo" id="combo"><b id="comboN">×1</b><span id="comboTxt">COMBO</span></div>
+    <div class="field" id="field"></div>
+    <canvas id="fx"></canvas>
+    <div class="countdown" id="countdown"></div>
+
+    <!-- learning card -->
+    <div class="learn" id="learn">
+      <div class="lcard">
+        <div class="lhead" id="lHead">MashaAllah!</div>
+        <div class="lref" id="lRef"></div>
+        <div class="lar ar" dir="rtl" id="lAr"></div>
+        <div class="ltr" id="lTr"></div>
+        <div class="len" id="lEn"></div>
+        <div class="lprog"><i id="lProg"></i></div>
+        <div class="lhint">tap to continue</div>
+      </div>
+    </div>
+
+    <!-- pause -->
+    <div class="overlay" id="pauseOv">
+      <div class="panel">
+        <h2>Paused</h2>
+        <button class="big" id="btnResume">▶ Resume</button>
+        <button class="ghost" id="btnQuit">Quit to menu</button>
+      </div>
+    </div>
+
+    <!-- results -->
+    <div class="overlay" id="resultOv">
+      <div class="panel result">
+        <div class="rtitle" id="rTitle">Round complete</div>
+        <div class="rsub" id="rSub"></div>
+        <div class="rstats" id="rStats"></div>
+        <div class="rbest" id="rBest"></div>
+        <button class="big" id="btnAgain">↻ Play again</button>
+        <button class="ghost" id="btnNext">Next surah ›</button>
+        <button class="ghost" id="btnMenu">Menu</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="toast" id="levelToast"></div>
+</div>
+<script src="data.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
